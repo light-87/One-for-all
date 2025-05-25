@@ -1219,7 +1219,8 @@ def train_transformer_model(model_config: Dict):
     model = model.to(DEVICE)
     
     # Initialize optimizer and scheduler
-    optimizer = AdamW(model.parameters(), lr=model_config['learning_rate'])
+    learning_rate = float(model_config['learning_rate'])
+    optimizer = AdamW(model.parameters(), lr= learning_rate)
     total_steps = len(train_loader) * model_config['epochs']
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -1301,7 +1302,7 @@ def train_transformer_model(model_config: Dict):
             torch.save(model.state_dict(), model_path)
         
         # Early stopping
-        patience = 3
+        patience = 5
         if not hasattr(train_transformer_model, 'patience_counter'):
             train_transformer_model.patience_counter = 0
             

@@ -137,8 +137,8 @@ cross_validation:
 # Weights & Biases
 wandb:
   enabled: true
-  project: "phospho-prediction"
-  entity: "vt00310"
+  project: "One-for-all"
+  entity: "vaibhav87"
   tags: ["experiment"]
   log_frequency: 50
   log_model: true
