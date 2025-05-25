@@ -1088,38 +1088,97 @@ class FocalLoss(nn.Module):
         focal_loss = focal_weights * bce_loss
         return focal_loss.mean()
 
-def train_transformer_epoch(model, dataloader, optimizer, criterion, scaler, device):
-    """Train one epoch with mixed precision"""
+def train_transformer_epoch(model, dataloader, optimizer, criterion, scaler, device, scheduler=None):
+    """Train one epoch with proper progress tracking and memory management"""
     model.train()
     total_loss = 0
     all_targets = []
     all_predictions = []
     
+    print("Training:")
     for i, batch in enumerate(dataloader):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         targets = batch['target'].to(device)
         
-        optimizer.zero_grad()
-        
-        with autocast():
+        # Forward pass with mixed precision
+        if scaler is not None:
+            with autocast():
+                outputs = model(input_ids, attention_mask)
+                
+                if isinstance(criterion, MotifAwareLoss):
+                    loss = criterion(outputs, targets, batch['sequence'], batch['position'])
+                else:
+                    loss = criterion(outputs, targets)
+                
+                # Scale loss for gradient accumulation
+                loss = loss / CONFIG['transformers']['gradient_accumulation_steps']
+        else:
             outputs = model(input_ids, attention_mask)
             
             if isinstance(criterion, MotifAwareLoss):
                 loss = criterion(outputs, targets, batch['sequence'], batch['position'])
             else:
                 loss = criterion(outputs, targets)
+            
+            # Scale loss for gradient accumulation
+            loss = loss / CONFIG['transformers']['gradient_accumulation_steps']
         
-        scaler.scale(loss).backward()
+        # Backward pass
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         
+        # Gradient accumulation and optimizer step
         if (i + 1) % CONFIG['transformers']['gradient_accumulation_steps'] == 0:
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler is not None:
+                # Clip gradients before optimizer step
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+            
+            if scheduler is not None:
+                scheduler.step()
+            
             optimizer.zero_grad()
         
-        total_loss += loss.item()
+        # Print progress occasionally
+        if i % 20 == 0 or i == len(dataloader) - 1:
+            current_loss = loss.item() * CONFIG['transformers']['gradient_accumulation_steps']
+            print(f"\rBatch {i+1}/{len(dataloader)}, Loss: {current_loss:.4f}", end="", flush=True)
+        
+        # Accumulate metrics (scale back the loss)
+        total_loss += loss.item() * CONFIG['transformers']['gradient_accumulation_steps']
         all_targets.extend(targets.cpu().numpy())
         all_predictions.extend(torch.sigmoid(outputs).detach().cpu().numpy())
+        
+        # Memory cleanup every 100 batches
+        if i % 100 == 0 and i > 0:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    
+    print()  # New line after progress
+    
+    # Handle remaining gradients if batch doesn't divide evenly
+    if len(dataloader) % CONFIG['transformers']['gradient_accumulation_steps'] != 0:
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+        
+        if scheduler is not None:
+            scheduler.step()
+        optimizer.zero_grad()
     
     avg_loss = total_loss / len(dataloader)
     predictions_binary = (np.array(all_predictions) > 0.5).astype(int)
@@ -1189,16 +1248,17 @@ def train_transformer_model(model_config: Dict):
         LOGGER.info(f"Epoch {epoch+1}/{model_config['epochs']}")
         
         # Train
-        train_metrics = train_transformer_epoch(model, train_loader, optimizer, criterion, scaler, DEVICE)
+        train_metrics = train_transformer_epoch(model, train_loader, optimizer, criterion, scaler, DEVICE, scheduler)
         
-        # Validate
+# Validate
         model.eval()
         val_loss = 0
         val_targets = []
         val_predictions = []
         
+        print("Evaluating:")
         with torch.no_grad():
-            for batch in val_loader:
+            for i, batch in enumerate(val_loader):
                 input_ids = batch['input_ids'].to(DEVICE)
                 attention_mask = batch['attention_mask'].to(DEVICE)
                 targets = batch['target'].to(DEVICE)
@@ -1209,6 +1269,17 @@ def train_transformer_model(model_config: Dict):
                 val_loss += loss.item()
                 val_targets.extend(targets.cpu().numpy())
                 val_predictions.extend(torch.sigmoid(outputs).cpu().numpy())
+                
+                # Print progress occasionally
+                if i % 20 == 0 or i == len(val_loader) - 1:
+                    print(f"\rBatch {i+1}/{len(val_loader)}", end="", flush=True)
+                
+                # Memory cleanup every 50 batches during evaluation
+                if i % 50 == 0 and i > 0:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+        
+        print()  # New line after progress
         
         val_loss /= len(val_loader)
         val_predictions_binary = (np.array(val_predictions) > 0.5).astype(int)
@@ -1229,6 +1300,32 @@ def train_transformer_model(model_config: Dict):
             model_path = os.path.join(CONFIG['paths']['checkpoint_dir'], f"best_transformer_{model_config['model_name'].replace('/', '_')}.pt")
             torch.save(model.state_dict(), model_path)
         
+        # Early stopping
+        patience = 3
+        if not hasattr(train_transformer_model, 'patience_counter'):
+            train_transformer_model.patience_counter = 0
+            
+        # Save model if it's the best so far
+        if val_metrics["f1"] > best_val_f1:
+            best_val_f1 = val_metrics["f1"]
+            train_transformer_model.patience_counter = 0
+            model_path = os.path.join(CONFIG['paths']['checkpoint_dir'], f"best_transformer_{model_config['model_name'].replace('/', '_')}.pt")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_f1': best_val_f1,
+                'val_metrics': val_metrics
+            }, model_path)
+            print(f"Saved new best model with F1 score: {best_val_f1:.4f}")
+        else:
+            train_transformer_model.patience_counter += 1
+            
+        if train_transformer_model.patience_counter >= patience:
+            print(f"Early stopping triggered after {patience} epochs without improvement")
+            break
+
+
         # Log to wandb if enabled
         if CONFIG['wandb']['enabled']:
             wandb.log({

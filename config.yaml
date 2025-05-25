@@ -55,16 +55,16 @@ xgboost:
 transformers:
   enabled: true
   use_mixed_precision: true
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 2
   
   # Different model variants to try
   models:
     esm2_small:
       enabled: true
       model_name: "facebook/esm2_t6_8M_UR50D"
-      batch_size: 32
+      batch_size: 16
       learning_rate: 2e-5
-      epochs: 10
+      epochs: 5
       
     esm2_medium:
       enabled: false  # Set true to use
@@ -155,7 +155,7 @@ interpretability:
   
 # System Settings
 system:
-  num_workers: 4
+  num_workers: 2
   pin_memory: true
   deterministic: true
   benchmark: false
