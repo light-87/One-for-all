@@ -1,0 +1,74 @@
+# One-For-All Phosphorylation Site Prediction Pipeline Requirements
+
+# Core Data Science Libraries
+numpy>=1.21.0
+pandas>=1.3.0
+datatable>=1.0.0
+scipy>=1.7.0
+
+# Machine Learning Libraries
+scikit-learn>=1.0.0
+xgboost>=1.6.0
+optuna>=3.0.0
+
+# Deep Learning and Transformers
+torch>=1.12.0
+torchvision>=0.13.0
+torchaudio>=0.12.0
+transformers>=4.20.0
+tokenizers>=0.12.0
+
+# Visualization Libraries
+matplotlib>=3.5.0
+seaborn>=0.11.0
+plotly>=5.0.0
+
+# Progress and Logging
+tqdm>=4.64.0
+wandb>=0.13.0
+tensorboard>=2.9.0
+tensorboardX>=2.5.1
+
+# Configuration and Utilities
+pyyaml>=6.0
+python-dotenv>=0.19.0
+psutil>=5.8.0
+
+# Interpretability (Optional but Recommended)
+shap>=0.41.0
+
+# Additional Scientific Computing
+jupyter>=1.0.0
+ipykernel>=6.0.0
+notebook>=6.4.0
+
+# Development and Testing (Optional)
+pytest>=7.0.0
+pytest-cov>=3.0.0
+black>=22.0.0
+flake8>=4.0.0
+
+# Excel File Support
+openpyxl>=3.0.0
+xlrd>=2.0.0
+
+# Memory Profiling (Optional)
+memory-profiler>=0.60.0
+
+# Progress Bar Extensions
+progressbar2>=4.0.0
+
+# Additional Utilities
+joblib>=1.1.0
+pickle5>=0.0.11
+
+# For CUDA Support (uncomment if using GPU)
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# torch>=1.12.0+cu118
+# torchvision>=0.13.0+cu118
+# torchaudio>=0.12.0+cu118
+
+# Alternative CPU-only PyTorch (uncomment if no GPU)
+# torch>=1.12.0+cpu
+# torchvision>=0.13.0+cpu
+# torchaudio>=0.12.0+cpu

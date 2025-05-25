@@ -1,0 +1,167 @@
+# config.yaml - One-For-All Phosphorylation Site Prediction Pipeline Configuration
+
+# Paths Configuration
+paths:
+  sequence_data: "data/Sequence_data.txt"
+  labels_data: "data/labels.xlsx"
+  physicochemical_data: "data/physiochemical_property.csv"
+  output_dir: "outputs/"
+  checkpoint_dir: "checkpoints/"
+  
+# Pipeline Control - Set to false to skip sections
+pipeline:
+  run_data_preprocessing: true
+  run_feature_extraction: true
+  run_xgboost: true
+  run_transformers: true
+  run_ensemble: true
+  run_evaluation: true
+  run_cross_validation: false  # Set true for final evaluation
+  
+# Data Processing
+data:
+  use_cached_features: false  # Skip feature extraction if files exist
+  cached_features_path: "outputs/features/"
+  window_size: 15  # Can be 5, 7, 10, 15, 21, 25
+  max_sequence_length: 5000
+  balance_classes: true
+  random_seed: 42
+  
+# Feature Extraction
+features:
+  extract_aac: true
+  extract_dpc: true
+  extract_tpc: true
+  extract_binary: true
+  extract_physicochemical: true
+  use_datatable: true  # Memory optimization
+  batch_size: 1000
+  
+# XGBoost Configuration
+xgboost:
+  enabled: true
+  hyperparameter_tuning: false
+  params:
+    n_estimators: 1000
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    tree_method: 'hist'
+    device: 'cuda'  # or 'cpu'
+    early_stopping_rounds: 50
+    
+# Transformer Configurations - Multiple architectures
+transformers:
+  enabled: true
+  use_mixed_precision: true
+  gradient_accumulation_steps: 4
+  
+  # Different model variants to try
+  models:
+    esm2_small:
+      enabled: true
+      model_name: "facebook/esm2_t6_8M_UR50D"
+      batch_size: 32
+      learning_rate: 2e-5
+      epochs: 10
+      
+    esm2_medium:
+      enabled: false  # Set true to use
+      model_name: "facebook/esm2_t12_35M_UR50D"
+      batch_size: 16
+      learning_rate: 1e-5
+      epochs: 10
+      
+    hierarchical_attention:
+      enabled: true
+      base_model: "facebook/esm2_t6_8M_UR50D"
+      use_local_attention: true
+      use_global_attention: true
+      context_window: 3
+      
+    multi_scale_fusion:
+      enabled: true
+      base_model: "facebook/esm2_t6_8M_UR50D"
+      window_sizes: [5, 10, 20]
+      fusion_method: "attention"  # or "concatenate"
+      
+# Novel Loss Functions
+loss_functions:
+  use_focal_loss: true
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+  
+  use_motif_aware_loss: true
+  motif_weights:
+    SP: 2.0
+    TP: 2.0
+    ST: 1.5
+    
+  use_contrastive_loss: false
+  contrastive_margin: 0.5
+  
+# Ensemble Methods
+ensemble:
+  voting:
+    enabled: true
+    strategy: "soft"
+    optimize_weights: true
+    
+  stacking:
+    enabled: true
+    meta_learner: "logistic_regression"  # or "mlp", "xgboost"
+    use_cv_predictions: true
+    
+  dynamic_selection:
+    enabled: true
+    k_neighbors: 5
+    
+  confidence_weighted:
+    enabled: true
+    
+# Evaluation Settings
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1", "auc", "mcc"]
+  save_predictions: true
+  save_confusion_matrix: true
+  save_roc_curves: true
+  save_feature_importance: true
+  
+# Cross Validation
+cross_validation:
+  n_folds: 5
+  strategy: "stratified_group"  # Group by protein
+  save_fold_predictions: true
+  
+# Weights & Biases
+wandb:
+  enabled: true
+  project: "phospho-prediction"
+  entity: "vt00310"
+  tags: ["experiment"]
+  log_frequency: 50
+  log_model: true
+  log_predictions: true
+  log_attention_maps: true
+  
+# Interpretability
+interpretability:
+  calculate_shap: true
+  shap_samples: 100
+  analyze_attention: true
+  analyze_errors: true
+  cluster_errors: true
+  
+# System Settings
+system:
+  num_workers: 4
+  pin_memory: true
+  deterministic: true
+  benchmark: false
+  
+# Logging
+logging:
+  level: "INFO"
+  save_to_file: true
+  log_file: "outputs/experiment.log"
