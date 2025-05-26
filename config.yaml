@@ -13,7 +13,7 @@ pipeline:
   run_data_preprocessing: false
   run_feature_extraction: false
   run_xgboost: false
-  run_transformers: false
+  run_transformers: true
   run_ensemble: true
   run_evaluation: true
   run_cross_validation: false  # Set true for final evaluation

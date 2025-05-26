@@ -1211,8 +1211,14 @@ def train_transformer_model(model_config: Dict):
     val_loader = DataLoader(val_dataset, batch_size=model_config['batch_size'])
     
     # Initialize model
-    if 'hierarchical' in model_config:
+    model_name_key = list(CONFIG['transformers']['models'].keys())[
+        list(CONFIG['transformers']['models'].values()).index(model_config)
+    ]
+
+    if 'hierarchical' in model_name_key:
         model = HierarchicalAttentionTransformer(model_config['model_name'])
+    elif 'multi_scale' in model_name_key:
+        model = MultiScaleFusionTransformer(model_config['model_name'])
     else:
         model = BasePhosphoTransformer(model_config['model_name'])
     
@@ -1612,6 +1618,22 @@ def train_ensemble_models():
                     # Load checkpoint
                     checkpoint = torch.load(model_checkpoint, map_location=DEVICE)
                     model.load_state_dict(checkpoint)
+                    if isinstance(checkpoint, dict):
+                        # Check if it has standard wrapper keys
+                        if 'model_state_dict' in checkpoint:
+                            model.load_state_dict(checkpoint['model_state_dict'])
+                            LOGGER.info(f"Loaded model_state_dict for {model_name}")
+                        elif 'state_dict' in checkpoint:
+                            model.load_state_dict(checkpoint['state_dict'])
+                            LOGGER.info(f"Loaded state_dict for {model_name}")
+                        else:
+                            # Direct state dict (your case)
+                            model.load_state_dict(checkpoint)
+                            LOGGER.info(f"Loaded direct state dict for {model_name}")
+                    else:
+                        # Fallback for other formats
+                        model.load_state_dict(checkpoint)
+                        LOGGER.info(f"Loaded checkpoint directly for {model_name}")
                     model = model.to(DEVICE)
                     model.eval()
                     
