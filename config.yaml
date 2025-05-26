@@ -10,10 +10,10 @@ paths:
   
 # Pipeline Control - Set to false to skip sections
 pipeline:
-  run_data_preprocessing: true
-  run_feature_extraction: true
-  run_xgboost: true
-  run_transformers: true
+  run_data_preprocessing: false
+  run_feature_extraction: false
+  run_xgboost: false
+  run_transformers: false
   run_ensemble: true
   run_evaluation: true
   run_cross_validation: false  # Set true for final evaluation
@@ -75,14 +75,20 @@ transformers:
       
     hierarchical_attention:
       enabled: true
-      base_model: "facebook/esm2_t6_8M_UR50D"
+      batch_size: 16         
+      learning_rate: 2e-5     
+      epochs: 5              
+      model_name: "facebook/esm2_t6_8M_UR50D"
       use_local_attention: true
       use_global_attention: true
       context_window: 3
       
     multi_scale_fusion:
       enabled: true
-      base_model: "facebook/esm2_t6_8M_UR50D"
+      batch_size: 16          
+      learning_rate: 2e-5     
+      epochs: 5               
+      model_name: "facebook/esm2_t6_8M_UR50D"
       window_sizes: [5, 10, 20]
       fusion_method: "attention"  # or "concatenate"
       

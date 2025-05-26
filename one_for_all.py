@@ -1193,7 +1193,7 @@ def train_transformer_epoch(model, dataloader, optimizer, criterion, scaler, dev
     return metrics
 
 def train_transformer_model(model_config: Dict):
-    """Train a transformer model variant"""
+    """Train a transformer model variant with proper per-model early stopping"""
     LOGGER.info(f"Training transformer model: {model_config}")
     
     # Load data
@@ -1219,8 +1219,8 @@ def train_transformer_model(model_config: Dict):
     model = model.to(DEVICE)
     
     # Initialize optimizer and scheduler
-    learning_rate = float(model_config['learning_rate'])
-    optimizer = AdamW(model.parameters(), lr= learning_rate)
+    learning_rate = float(model_config['learning_rate'])  # Convert to float
+    optimizer = AdamW(model.parameters(), lr=learning_rate)
     total_steps = len(train_loader) * model_config['epochs']
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -1242,8 +1242,10 @@ def train_transformer_model(model_config: Dict):
     # Initialize mixed precision scaler
     scaler = GradScaler() if CONFIG['transformers']['use_mixed_precision'] else None
     
-    # Training loop
+    # Training loop with per-model early stopping
     best_val_f1 = 0.0
+    patience = 3
+    patience_counter = 0  # LOCAL variable per model
     
     for epoch in range(model_config['epochs']):
         LOGGER.info(f"Epoch {epoch+1}/{model_config['epochs']}")
@@ -1251,7 +1253,7 @@ def train_transformer_model(model_config: Dict):
         # Train
         train_metrics = train_transformer_epoch(model, train_loader, optimizer, criterion, scaler, DEVICE, scheduler)
         
-# Validate
+        # Validate
         model.eval()
         val_loss = 0
         val_targets = []
@@ -1274,11 +1276,6 @@ def train_transformer_model(model_config: Dict):
                 # Print progress occasionally
                 if i % 20 == 0 or i == len(val_loader) - 1:
                     print(f"\rBatch {i+1}/{len(val_loader)}", end="", flush=True)
-                
-                # Memory cleanup every 50 batches during evaluation
-                if i % 50 == 0 and i > 0:
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
         
         print()  # New line after progress
         
@@ -1295,21 +1292,12 @@ def train_transformer_model(model_config: Dict):
         LOGGER.info(f"Train - Loss: {train_metrics['loss']:.4f}, F1: {train_metrics['f1']:.4f}")
         LOGGER.info(f"Val - Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}")
         
-        # Save best model
+        # Early stopping logic (per model)
         if val_metrics['f1'] > best_val_f1:
             best_val_f1 = val_metrics['f1']
-            model_path = os.path.join(CONFIG['paths']['checkpoint_dir'], f"best_transformer_{model_config['model_name'].replace('/', '_')}.pt")
-            torch.save(model.state_dict(), model_path)
-        
-        # Early stopping
-        patience = 5
-        if not hasattr(train_transformer_model, 'patience_counter'):
-            train_transformer_model.patience_counter = 0
+            patience_counter = 0  # Reset counter for THIS model
             
-        # Save model if it's the best so far
-        if val_metrics["f1"] > best_val_f1:
-            best_val_f1 = val_metrics["f1"]
-            train_transformer_model.patience_counter = 0
+            # Save best model
             model_path = os.path.join(CONFIG['paths']['checkpoint_dir'], f"best_transformer_{model_config['model_name'].replace('/', '_')}.pt")
             torch.save({
                 'epoch': epoch,
@@ -1318,15 +1306,16 @@ def train_transformer_model(model_config: Dict):
                 'best_val_f1': best_val_f1,
                 'val_metrics': val_metrics
             }, model_path)
-            print(f"Saved new best model with F1 score: {best_val_f1:.4f}")
+            LOGGER.info(f"Saved new best model with F1 score: {best_val_f1:.4f}")
         else:
-            train_transformer_model.patience_counter += 1
-            
-        if train_transformer_model.patience_counter >= patience:
-            print(f"Early stopping triggered after {patience} epochs without improvement")
+            patience_counter += 1
+            LOGGER.info(f"No improvement. Patience: {patience_counter}/{patience}")
+        
+        # Early stopping check for THIS model only
+        if patience_counter >= patience:
+            LOGGER.info(f"Early stopping triggered for this model after {patience} epochs without improvement")
             break
-
-
+        
         # Log to wandb if enabled
         if CONFIG['wandb']['enabled']:
             wandb.log({
@@ -1337,6 +1326,7 @@ def train_transformer_model(model_config: Dict):
                 'val/f1': val_metrics['f1']
             })
     
+    LOGGER.info(f"Model training completed. Best F1: {best_val_f1:.4f}")
     return model
 
 @timer
@@ -1573,17 +1563,202 @@ class ConfidenceWeightedEnsemble:
 
 @timer
 def train_ensemble_models():
-    """Train all ensemble methods"""
+    """Train ensemble models using trained base models"""
     if not CONFIG['ensemble']:
         LOGGER.info("Ensemble training disabled")
         return
     
     LOGGER.info("Starting ensemble training...")
     
-    # Load base model predictions (this is a simplified version)
-    # In practice, you would load actual trained models
+    # Load test data for ensemble evaluation
+    features_dir = CONFIG['data']['cached_features_path']
+    test_df = pd.read_csv(os.path.join(features_dir, 'test_features.csv'))
+    
+    # Prepare data
+    id_cols = ['Header', 'Position', 'target']
+    feature_cols = [col for col in test_df.columns if col not in id_cols]
+    
+    X_test = test_df[feature_cols]
+    y_test = test_df['target']
+    
+    # Load XGBoost predictions
+    xgb_predictions_df = pd.read_csv(os.path.join(CONFIG['paths']['output_dir'], 'xgboost_predictions.csv'))
+    xgb_predictions = xgb_predictions_df['probability'].values
+    
+    # Load transformer predictions from all trained models
+    transformer_predictions = {}
+    checkpoint_dir = CONFIG['paths']['checkpoint_dir']
+    
+    # Get predictions from each transformer model
+    data_dir = os.path.join(CONFIG['paths']['output_dir'], 'data')
+    test_data_df = pd.read_csv(os.path.join(data_dir, 'test_data.csv'))
+    
+    from transformers import AutoTokenizer
+    
+    for model_name, model_config in CONFIG['transformers']['models'].items():
+        if model_config.get('enabled', False):
+            model_checkpoint = os.path.join(checkpoint_dir, f"best_transformer_{model_config['model_name'].replace('/', '_')}.pt")
+            
+            if os.path.exists(model_checkpoint):
+                LOGGER.info(f"Getting predictions from {model_name}...")
+                
+                try:
+                    # Load model
+                    if 'hierarchical' in model_name:
+                        model = HierarchicalAttentionTransformer(model_config['model_name'])
+                    else:
+                        model = BasePhosphoTransformer(model_config['model_name'])
+                    
+                    # Load checkpoint
+                    checkpoint = torch.load(model_checkpoint, map_location=DEVICE)
+                    model.load_state_dict(checkpoint)
+                    model = model.to(DEVICE)
+                    model.eval()
+                    
+                    # Get predictions
+                    tokenizer = AutoTokenizer.from_pretrained(model_config['model_name'])
+                    test_dataset = PhosphorylationDataset(test_data_df, tokenizer, CONFIG['data']['window_size'])
+                    test_loader = DataLoader(test_dataset, batch_size=32)
+                    
+                    predictions = []
+                    with torch.no_grad():
+                        for batch in test_loader:
+                            input_ids = batch['input_ids'].to(DEVICE)
+                            attention_mask = batch['attention_mask'].to(DEVICE)
+                            
+                            outputs = model(input_ids, attention_mask)
+                            preds = torch.sigmoid(outputs).cpu().numpy()
+                            predictions.extend(preds)
+                    
+                    transformer_predictions[model_name] = np.array(predictions)
+                    LOGGER.info(f"Got {len(predictions)} predictions from {model_name}")
+                    
+                except Exception as e:
+                    LOGGER.error(f"Failed to get predictions from {model_name}: {e}")
+                    continue
+    
+    # Create ensemble predictions
+    ensemble_results = {}
+    
+    # 1. Simple Voting Ensemble
+    if CONFIG['ensemble'].get('voting', {}).get('enabled', False):
+        LOGGER.info("Training voting ensemble...")
+        
+        all_predictions = [xgb_predictions]
+        model_names = ['xgboost']
+        
+        for name, preds in transformer_predictions.items():
+            all_predictions.append(preds)
+            model_names.append(name)
+        
+        if len(all_predictions) > 1:
+            # Simple average
+            ensemble_pred_avg = np.mean(all_predictions, axis=0)
+            
+            # Weighted average (optimize weights)
+            from scipy.optimize import minimize
+            
+            def objective(weights):
+                weights = weights / weights.sum()  # Normalize
+                ensemble_pred = sum(w * p for w, p in zip(weights, all_predictions))
+                return -f1_score(y_test, (ensemble_pred > 0.5).astype(int))
+            
+            result = minimize(
+                objective,
+                np.ones(len(all_predictions)) / len(all_predictions),
+                bounds=[(0, 1) for _ in range(len(all_predictions))],
+                method='SLSQP'
+            )
+            
+            optimal_weights = result.x / result.x.sum()
+            ensemble_pred_weighted = sum(w * p for w, p in zip(optimal_weights, all_predictions))
+            
+            # Evaluate both
+            ensemble_results['voting_average'] = {
+                'predictions': ensemble_pred_avg,
+                'f1': f1_score(y_test, (ensemble_pred_avg > 0.5).astype(int)),
+                'auc': roc_auc_score(y_test, ensemble_pred_avg)
+            }
+            
+            ensemble_results['voting_weighted'] = {
+                'predictions': ensemble_pred_weighted,
+                'f1': f1_score(y_test, (ensemble_pred_weighted > 0.5).astype(int)),
+                'auc': roc_auc_score(y_test, ensemble_pred_weighted),
+                'weights': dict(zip(model_names, optimal_weights))
+            }
+            
+            LOGGER.info(f"Voting Average - F1: {ensemble_results['voting_average']['f1']:.4f}, AUC: {ensemble_results['voting_average']['auc']:.4f}")
+            LOGGER.info(f"Voting Weighted - F1: {ensemble_results['voting_weighted']['f1']:.4f}, AUC: {ensemble_results['voting_weighted']['auc']:.4f}")
+            LOGGER.info(f"Optimal weights: {ensemble_results['voting_weighted']['weights']}")
+    
+    # 2. Stacking Ensemble
+    if CONFIG['ensemble'].get('stacking', {}).get('enabled', False):
+        LOGGER.info("Training stacking ensemble...")
+        
+        if len(transformer_predictions) > 0:
+            # Prepare stacking features
+            stacking_features = [xgb_predictions.reshape(-1, 1)]
+            for name, preds in transformer_predictions.items():
+                stacking_features.append(preds.reshape(-1, 1))
+            
+            X_meta = np.hstack(stacking_features)
+            
+            # Split for meta-learner training
+            from sklearn.model_selection import train_test_split
+            X_meta_train, X_meta_test, y_meta_train, y_meta_test = train_test_split(
+                X_meta, y_test, test_size=0.3, random_state=42, stratify=y_test
+            )
+            
+            # Train meta-learner
+            meta_learner_type = CONFIG['ensemble']['stacking'].get('meta_learner', 'logistic_regression')
+            
+            if meta_learner_type == 'logistic_regression':
+                from sklearn.linear_model import LogisticRegression
+                meta_learner = LogisticRegression(random_state=42)
+            elif meta_learner_type == 'xgboost':
+                import xgboost as xgb
+                meta_learner = xgb.XGBClassifier(random_state=42)
+            else:
+                from sklearn.ensemble import RandomForestClassifier
+                meta_learner = RandomForestClassifier(random_state=42)
+            
+            meta_learner.fit(X_meta_train, y_meta_train)
+            
+            # Get stacking predictions
+            stacking_pred = meta_learner.predict_proba(X_meta_test)[:, 1]
+            
+            ensemble_results['stacking'] = {
+                'predictions': stacking_pred,
+                'f1': f1_score(y_meta_test, (stacking_pred > 0.5).astype(int)),
+                'auc': roc_auc_score(y_meta_test, stacking_pred),
+                'meta_learner': meta_learner_type
+            }
+            
+            LOGGER.info(f"Stacking - F1: {ensemble_results['stacking']['f1']:.4f}, AUC: {ensemble_results['stacking']['auc']:.4f}")
+    
+    # Save ensemble results
+    ensemble_metrics = {}
+    for name, result in ensemble_results.items():
+        ensemble_metrics[name] = {
+            'f1': result['f1'],
+            'auc': result['auc']
+        }
+        if 'weights' in result:
+            ensemble_metrics[name]['weights'] = result['weights']
+        if 'meta_learner' in result:
+            ensemble_metrics[name]['meta_learner'] = result['meta_learner']
+    
+    # Save to file
+    ensemble_metrics_path = os.path.join(CONFIG['paths']['output_dir'], 'ensemble_metrics.json')
+    with open(ensemble_metrics_path, 'w') as f:
+        json.dump(ensemble_metrics, f, indent=2)
     
     LOGGER.info("Ensemble training completed")
+    LOGGER.info("Ensemble results:")
+    for name, metrics in ensemble_metrics.items():
+        LOGGER.info(f"  {name}: F1={metrics['f1']:.4f}, AUC={metrics['auc']:.4f}")
+    
+    return ensemble_results
 
 # ============================================================================
 # SECTION 7: EVALUATION AND METRICS
