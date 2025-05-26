@@ -64,7 +64,7 @@ transformers:
       model_name: "facebook/esm2_t6_8M_UR50D"
       batch_size: 16
       learning_rate: 2e-5
-      epochs: 5
+      epochs: 1
       
     esm2_medium:
       enabled: false  # Set true to use
@@ -77,7 +77,7 @@ transformers:
       enabled: true
       batch_size: 16         
       learning_rate: 2e-5     
-      epochs: 5              
+      epochs: 1           
       model_name: "facebook/esm2_t6_8M_UR50D"
       use_local_attention: true
       use_global_attention: true
@@ -87,7 +87,7 @@ transformers:
       enabled: true
       batch_size: 16          
       learning_rate: 2e-5     
-      epochs: 5               
+      epochs: 1              
       model_name: "facebook/esm2_t6_8M_UR50D"
       window_sizes: [5, 10, 20]
       fusion_method: "attention"  # or "concatenate"

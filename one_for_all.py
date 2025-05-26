@@ -1001,41 +1001,67 @@ class MultiScaleFusionTransformer(BasePhosphoTransformer):
             nn.Dropout(0.3),
             nn.Linear(128, 1)
         )
-        
-    def forward(self, multi_scale_inputs):
+    
+    def forward(self, input_ids, attention_mask, multi_scale_inputs=None):
         """
-        multi_scale_inputs: Dict with keys as window sizes
+        Can accept either:
+        1. Standard inputs (input_ids, attention_mask) - uses center features
+        2. multi_scale_inputs dict with multiple window sizes
         """
-        scale_features = []
-        
-        # Process each scale
-        for i, (window_size, inputs) in enumerate(multi_scale_inputs.items()):
-            input_ids = inputs['input_ids']
-            attention_mask = inputs['attention_mask']
+        if multi_scale_inputs is not None:
+            # Original multi-scale processing
+            scale_features = []
             
-            # Encode
+            for i, (window_size, inputs) in enumerate(multi_scale_inputs.items()):
+                input_ids = inputs['input_ids']
+                attention_mask = inputs['attention_mask']
+                
+                outputs = self.protein_encoder(input_ids, attention_mask)
+                center_features = outputs.last_hidden_state[:, outputs.last_hidden_state.size(1)//2, :]
+                
+                projected = self.scale_projections[i](center_features)
+                scale_features.append(projected.unsqueeze(1))
+            
+            all_scales = torch.cat(scale_features, dim=1)
+            attended_features, attention_weights = self.scale_attention(
+                all_scales, all_scales, all_scales
+            )
+            combined = attended_features.mean(dim=1)
+            output = self.classifier(combined)
+            
+            return output.squeeze(-1), attention_weights
+        else:
+            # Simplified single-scale processing for standard training
             outputs = self.protein_encoder(input_ids, attention_mask)
-            center_features = outputs.last_hidden_state[:, outputs.last_hidden_state.size(1)//2, :]
             
-            # Project
-            projected = self.scale_projections[i](center_features)
-            scale_features.append(projected.unsqueeze(1))
-        
-        # Stack all scale features
-        all_scales = torch.cat(scale_features, dim=1)
-        
-        # Use attention to combine scales
-        attended_features, attention_weights = self.scale_attention(
-            all_scales, all_scales, all_scales
-        )
-        
-        # Pool across scales
-        combined = attended_features.mean(dim=1)
-        
-        # Final prediction
-        output = self.classifier(combined)
-        
-        return output.squeeze(-1), attention_weights
+            # Get center position features
+            center_pos = outputs.last_hidden_state.size(1) // 2
+            center_features = outputs.last_hidden_state[:, center_pos, :]
+            
+            # Create pseudo multi-scale by using different contexts
+            scale_features = []
+            seq_output = outputs.last_hidden_state
+            
+            for i, window_size in enumerate(self.window_sizes):
+                # Extract different window sizes around center
+                start = max(0, center_pos - window_size)
+                end = min(seq_output.size(1), center_pos + window_size + 1)
+                
+                # Pool features from window
+                window_features = seq_output[:, start:end, :].mean(dim=1)
+                projected = self.scale_projections[i](window_features)
+                scale_features.append(projected.unsqueeze(1))
+            
+            # Combine scales
+            all_scales = torch.cat(scale_features, dim=1)
+            attended_features, _ = self.scale_attention(
+                all_scales, all_scales, all_scales
+            )
+            combined = attended_features.mean(dim=1)
+            
+            # Final prediction
+            output = self.classifier(combined)
+            return output.squeeze(-1)
 
 class MotifAwareLoss(nn.Module):
     """Custom loss function with motif awareness"""
@@ -1304,7 +1330,7 @@ def train_transformer_model(model_config: Dict):
             patience_counter = 0  # Reset counter for THIS model
             
             # Save best model
-            model_path = os.path.join(CONFIG['paths']['checkpoint_dir'], f"best_transformer_{model_config['model_name'].replace('/', '_')}.pt")
+            model_path = os.path.join(CONFIG['paths']['checkpoint_dir'], f"best_{model_name_key}_transformer_{model_config['model_name'].replace('/', '_')}.pt")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
